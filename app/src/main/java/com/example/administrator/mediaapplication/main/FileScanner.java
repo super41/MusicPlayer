@@ -1,10 +1,15 @@
 package com.example.administrator.mediaapplication.main;
 
+import android.media.MediaMetadataRetriever;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.Message;
 import android.text.TextUtils;
 import android.util.Log;
+
+import com.example.administrator.mediaapplication.database.MediaItem;
+import com.example.administrator.mediaapplication.database.MediaItem_Table;
+import com.raizlabs.android.dbflow.sql.language.SQLite;
 
 import java.io.File;
 import java.util.ArrayList;
@@ -27,6 +32,8 @@ public class FileScanner {
     HandlerThread mWorkThread;
     Handler mWorkHandler;
 
+    final int MSG_SCAN_START=0;
+    final int MSG_SCAN_NEXT=1;
     private FileScanner() {
         mPendingScanDir = new Stack<>();
         mAllSong = new HashMap<>();
@@ -36,7 +43,15 @@ public class FileScanner {
             @Override
             public void handleMessage(Message msg) {
                 super.handleMessage(msg);
-                scan();
+                switch (msg.what){
+                    case MSG_SCAN_START:
+                        String dirPath = (String) msg.obj;
+                        scanStart(dirPath);
+                        break;
+                    case MSG_SCAN_NEXT:
+                        scan();
+                        break;
+                }
             }
         };
     }
@@ -50,12 +65,18 @@ public class FileScanner {
     }
 
     public void scanFile(String dirPath) {
+        mWorkHandler.obtainMessage(MSG_SCAN_START,dirPath).sendToTarget();
+    }
+
+    private void scanStart(String dirPath){
         mPendingScanDir.push(dirPath);
         if (!isScaning) {
             isScaning = true;
-            mWorkHandler.obtainMessage().sendToTarget();
-            if (mOnScanListener != null)
+            if (mOnScanListener != null) {
                 mOnScanListener.onScanStart();
+            }
+            SQLite.update(MediaItem.class).set(MediaItem_Table.enable.eq(false)).execute();
+            mWorkHandler.obtainMessage(MSG_SCAN_NEXT).sendToTarget();
         }
     }
 
@@ -74,7 +95,7 @@ public class FileScanner {
             scanDir(dirPath);
         }
         if (!mPendingScanDir.isEmpty())
-            mWorkHandler.obtainMessage().sendToTarget();
+            mWorkHandler.obtainMessage(MSG_SCAN_NEXT).sendToTarget();
         else {
             isScaning = false;
             if (mOnScanListener != null)
@@ -112,18 +133,51 @@ public class FileScanner {
                 mPendingScanDir.addAll(mTempDir);
 
                 if (mTempList.size() > 0) {
-                    //if user in db
-                    if(!exitInDb){
-                        Metrre mt = mt(filePath);
-                        mediaFile name = mt.name;
-                        mediaFile source = filePath;
-                        mediaFile airtrist = mt.art;
-                        ...
-                        save in db;
+                    //search weather in db
+                    for (String path : mTempList) {
+                        addInDatabase(path);
                     }
-                    mAllSong.put(dirPath, mTempList);
                 }
+                mAllSong.put(dirPath, mTempList);
             }
+        }
+    }
+
+    private boolean addInDatabase(String path) {
+        MediaItem mediaItem = SQLite.select().from(MediaItem.class).where(MediaItem_Table.path.eq(path)).querySingle();
+        if (mediaItem == null) {
+            Log.d(TAG, "scanDir: add in db " + path);
+            MediaMetadataRetriever mmr = new MediaMetadataRetriever();
+            try {
+                mmr.setDataSource(path);
+                // api level 10, 即从GB2.3.3开始有此功能
+                String title = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_TITLE);
+                // 专辑名
+                String album = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ALBUM);
+                // 媒体格式
+                String mime = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_MIMETYPE);
+                // 艺术家
+                String artist = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ARTIST);
+                // 播放时长单位为毫秒
+                String duration = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION);
+                // 从api level 14才有，即从ICS4.0才有此功能
+                String bitrate = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_BITRATE);
+                // 路径
+                String date = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DATE);
+
+                Log.d(TAG, "scanDir: " + "path：" + path + "\t" + "title: " + title + "\t" + "artist: " + artist + "\t" + "album:" + album
+                        + "\t" + "duration: " + duration + "\t" + "mine: " + mime + "\t" + "bitrate: " + bitrate + "\t" + "date: " + date +"\t"+"enable: true"
+                );
+                MediaItem m = new MediaItem(path, new File(path).getParent(), title, artist, album, Long.parseLong(duration),true);
+                m.save();
+                return true;
+            } catch (RuntimeException e) {
+                return false;
+            }
+        } else {
+            mediaItem.setEnable(true);
+            mediaItem.update();
+            return false;
         }
     }
 
